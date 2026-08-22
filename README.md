@@ -1,17 +1,17 @@
 # Queue Consume for Lyrion Music Server
 
-Reproduces MPD's "consume" behaviour: a track leaves the play queue once it
-has finished playing or has been skipped with Next/Previous, but NOT when you
+Reproduces the "consume" behavior found in other players (e.g. Music Player Daemon): a track leaves the play queue once it
+has finished playing or has been skipped with Next/Previous, but not when you
 jump directly to some other track in the queue.
 
 ## Use
 
 (Material Skin)
 
-- Per player: Settings -> Player -> pick the player -> Extra Settings -> Queue Consume -> tick the box.
-- Global options (Manage Plugins -> Queue Consume -> Settings):
+- Server: Settings -> Manage Plugins -> Queue Consume -> Settings:
   - Consume when skipping backwards (off by default)
   - Consume the final track of the queue (on by default)
+- Player: Pick the player -> Settings -> Player -> Extra Settings -> Queue Consume -> tick the box.
 
 CLI / JSON-RPC:
 
