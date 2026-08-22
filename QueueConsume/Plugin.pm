@@ -38,12 +38,10 @@ my $log = Slim::Utils::Log->addLogCategory({
 my $prefs = preferences('plugin.queueconsume');
 
 # Runtime state, keyed on the master player's id:
-#   index       - queue position of the track we consider "currently playing"
-#   url         - its url, used to re-locate it if the queue shifted under us
-#   jump        - how we got to the current track: absolute | next | prev
-#   busy        - re-entrancy guard while we delete something ourselves
-#   userStopped - the user issued a transport command (stop/pause/power);
-#                 the final track must then be kept
+#   index  - queue position of the track we consider "currently playing"
+#   url    - its url, used to re-locate it if the queue shifted under us
+#   jump   - how we got to the current track: absolute | next | prev
+#   busy   - re-entrancy guard while we delete something ourselves
 my %state;
 
 # Slim::Player::Playlist::track() on current LMS, song() on older builds.
@@ -73,8 +71,9 @@ sub initPlugin {
 		   'addtracks', 'inserttracks', 'delete', 'move', 'sync'] ]
 	);
 
-	# Transport commands issued by the user must not be mistaken for "the
-	# queue ran out of tracks".
+	# Transport commands are only logged here for diagnostics: the final
+	# track is consumed whenever the queue stops on it, whether the stop
+	# came from the user or from the queue running out.
 	Slim::Control::Request::subscribe(
 		\&_transportCallback,
 		[ ['stop', 'pause', 'power', 'playlistcontrol', 'play'] ]
@@ -159,18 +158,11 @@ sub _transportCallback {
 	my $client = $request->client() || return;
 	$client = $client->master();
 
-	my $st = $state{$client->id} ||= {};
-
-	# Play resumes playback: forget any earlier user stop. Every other
-	# transport command means the user is driving, so a following
-	# 'playlist stop' must keep the final track.
-	my $cmd = $request->getRequest(0);
-	if ($cmd eq 'play' || ($cmd eq 'playlistcontrol' && $request->getParam('cmd') eq 'play')) {
-		delete $st->{userStopped};
-	}
-	else {
-		$st->{userStopped} = 1;
-	}
+	# Diagnostic only: record which transport commands arrive around the
+	# end of a queue. No state is changed here.
+	main::DEBUGLOG && $log->is_debug && $log->debug(
+		$client->id . ": transport command '" . $request->getRequest(0) . "'"
+	);
 }
 
 # ------------------------------------------------------------------- logic --
@@ -180,9 +172,6 @@ sub _songChanged {
 	my $st = $state{$client->id} ||= {};
 
 	return if $st->{busy};
-
-	# A new song starts a fresh queue run - forget any earlier user stop.
-	delete $st->{userStopped};
 
 	my $jump      = delete $st->{jump};
 	my $prevIndex = $st->{index};
@@ -216,28 +205,38 @@ sub _songChanged {
 # last entry), consume that final track so the queue ends up empty.
 #
 # The removal is immediate, no deferred timer: a natural end of queue only
-# ever produces ['playlist','stop'], while anything the user did (stop,
-# pause, power, playlistcontrol) has already been recorded in
-# $st->{userStopped} by _transportCallback.
+# ever produces ['playlist','stop'].
 sub _maybeConsumeLast {
 	my $client = shift;
 	my $st = $state{$client->id} ||= {};
 
-	return if $st->{busy};
-
-	if (delete $st->{userStopped}) {
-		main::DEBUGLOG && $log->is_debug && $log->debug(
-			$client->id . ": stop came from the user - keeping the final track"
-		);
+	if ($st->{busy}) {
+		main::DEBUGLOG && $log->is_debug && $log->debug($client->id . ": skip - busy");
 		return;
 	}
 
-	return unless $prefs->get('consumeLastTrack');
-	return unless $prefs->client($client)->get('consume');
-	return unless defined $st->{index};
+	if (!$prefs->get('consumeLastTrack')) {
+		main::DEBUGLOG && $log->is_debug && $log->debug($client->id . ": skip - consumeLastTrack off");
+		return;
+	}
+
+	if (!$prefs->client($client)->get('consume')) {
+		main::DEBUGLOG && $log->is_debug && $log->debug($client->id . ": skip - player consume off");
+		return;
+	}
+
+	if (!defined $st->{index}) {
+		main::DEBUGLOG && $log->is_debug && $log->debug($client->id . ": skip - no tracked index");
+		return;
+	}
 
 	my $count = Slim::Player::Playlist::count($client) || 0;
-	return unless $count && $st->{index} == $count - 1;
+	if (!$count || $st->{index} != $count - 1) {
+		main::DEBUGLOG && $log->is_debug && $log->debug(
+			$client->id . ": skip - not on last track (index=$st->{index}, count=$count)"
+		);
+		return;
+	}
 
 	my ($index, $url) = ($st->{index}, $st->{url});
 	delete $st->{index};
