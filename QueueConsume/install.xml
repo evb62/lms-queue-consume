@@ -16,7 +16,7 @@
 	<module>Plugins::QueueConsume::Plugin</module>
 	<name>PLUGIN_QUEUECONSUME</name>
 	<description>PLUGIN_QUEUECONSUME_DESC</description>
-	<version>1.0.1</version>
+	<version>1.0.2</version>
 	<creator>Elon Brisola</creator>
 	<optionsURL>plugins/QueueConsume/settings/basic.html</optionsURL>
 	<targetApplication>

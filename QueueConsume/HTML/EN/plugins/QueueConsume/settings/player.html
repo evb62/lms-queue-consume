@@ -1,3 +1,4 @@
+[% # Per-player settings form; prefs are populated by Plugins::QueueConsume::PlayerSettings. %]
 [% PROCESS settings/header.html %]
 
 <div class="prefBlock">
@@ -6,38 +7,10 @@
 
 	<div class="prefName">[% "PLUGIN_QUEUECONSUME_ENABLE" | string %]</div>
 	<div class="prefInput">
-		<input type="checkbox" id="queueconsume_enable" name="pref_consume" value="1" [% IF prefs.pref_consume %]checked="checked"[% END %] />
+		<input type="checkbox" name="pref_consume" value="1" [% IF prefs.pref_consume %]checked="checked"[% END %] />
 		<span class="prefDesc">[% "PLUGIN_QUEUECONSUME_ENABLE_DESC" | string %]</span>
 	</div>
 
-	<div class="prefDesc">[% "PLUGIN_QUEUECONSUME_BASIC_DESC" | string %]</div>
-
-	<div id="queueconsume_dependents"[% UNLESS prefs.pref_consume %] class="queueconsume-disabled"[% END %]>
-
-		<div class="prefName">[% "PLUGIN_QUEUECONSUME_ON_PREVIOUS" | string %]</div>
-		<div class="prefInput">
-			<input type="checkbox" name="pref_consumeOnPrevious" value="1" [% IF prefs.pref_consumeOnPrevious %]checked="checked"[% END %] />
-			<span class="prefDesc">[% "PLUGIN_QUEUECONSUME_ON_PREVIOUS_DESC" | string %]</span>
-		</div>
-
-		<div class="prefName">[% "PLUGIN_QUEUECONSUME_LAST_TRACK" | string %]</div>
-		<div class="prefInput">
-			<input type="checkbox" name="pref_consumeLastTrack" value="1" [% IF prefs.pref_consumeLastTrack %]checked="checked"[% END %] />
-			<span class="prefDesc">[% "PLUGIN_QUEUECONSUME_LAST_TRACK_DESC" | string %]</span>
-		</div>
-
-	</div>
-
 </div>
-
-<style>
-.queueconsume-disabled { opacity: 0.4; pointer-events: none; }
-</style>
-
-<script type="text/javascript">
-document.getElementById('queueconsume_enable').addEventListener('change', function() {
-	document.getElementById('queueconsume_dependents').className = this.checked ? '' : 'queueconsume-disabled';
-});
-</script>
 
 [% PROCESS settings/footer.html %]

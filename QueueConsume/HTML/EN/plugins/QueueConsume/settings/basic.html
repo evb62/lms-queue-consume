@@ -1,0 +1,22 @@
+[% # Server-wide settings form; prefs are populated by Plugins::QueueConsume::Settings. %]
+[% PROCESS settings/header.html %]
+
+<div class="prefBlock">
+
+	<div class="prefDesc">[% "PLUGIN_QUEUECONSUME_DESC" | string %]</div>
+
+	<div class="prefName">[% "PLUGIN_QUEUECONSUME_ON_PREVIOUS" | string %]</div>
+	<div class="prefInput">
+		<input type="checkbox" name="pref_consumeOnPrevious" value="1" [% IF prefs.pref_consumeOnPrevious %]checked="checked"[% END %] />
+		<span class="prefDesc">[% "PLUGIN_QUEUECONSUME_ON_PREVIOUS_DESC" | string %]</span>
+	</div>
+
+	<div class="prefName">[% "PLUGIN_QUEUECONSUME_LAST_TRACK" | string %]</div>
+	<div class="prefInput">
+		<input type="checkbox" name="pref_consumeLastTrack" value="1" [% IF prefs.pref_consumeLastTrack %]checked="checked"[% END %] />
+		<span class="prefDesc">[% "PLUGIN_QUEUECONSUME_LAST_TRACK_DESC" | string %]</span>
+	</div>
+
+</div>
+
+[% PROCESS settings/footer.html %]

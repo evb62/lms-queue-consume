@@ -17,14 +17,12 @@ use warnings;
 use base qw(Slim::Plugin::Base);
 
 use Scalar::Util qw(blessed);
-use Time::HiRes ();
 
 use Slim::Control::Request;
 use Slim::Player::Playlist;
 use Slim::Player::Source;
 use Slim::Utils::Log;
 use Slim::Utils::Prefs;
-use Slim::Utils::Timers;
 
 use Plugins::QueueConsume::Settings;
 use Plugins::QueueConsume::PlayerSettings;
@@ -40,10 +38,12 @@ my $log = Slim::Utils::Log->addLogCategory({
 my $prefs = preferences('plugin.queueconsume');
 
 # Runtime state, keyed on the master player's id:
-#   index  - queue position of the track we consider "currently playing"
-#   url    - its url, used to re-locate it if the queue shifted under us
-#   jump   - how we got to the current track: absolute | next | prev
-#   busy   - re-entrancy guard while we delete something ourselves
+#   index       - queue position of the track we consider "currently playing"
+#   url         - its url, used to re-locate it if the queue shifted under us
+#   jump        - how we got to the current track: absolute | next | prev
+#   busy        - re-entrancy guard while we delete something ourselves
+#   userStopped - the user issued a transport command (stop/pause/power);
+#                 the final track must then be kept
 my %state;
 
 # Slim::Player::Playlist::track() on current LMS, song() on older builds.
@@ -73,16 +73,15 @@ sub initPlugin {
 		   'addtracks', 'inserttracks', 'delete', 'move', 'sync'] ]
 	);
 
-	# A stop/pause/power/playlistcontrol issued by the user must not be
-	# mistaken for "the queue ran out of tracks".
+	# Transport commands issued by the user must not be mistaken for "the
+	# queue ran out of tracks".
 	Slim::Control::Request::subscribe(
 		\&_transportCallback,
-		[ ['stop', 'pause', 'power', 'playlistcontrol'] ]
+		[ ['stop', 'pause', 'power', 'playlistcontrol', 'play'] ]
 	);
 
 	# CLI / JSON-RPC:  <playerid> queueconsume <0|1>   and   <playerid> queueconsume ?
-	Slim::Control::Request::addDispatch(['queueconsume', '_newvalue'], [0, 1, 1, \&_consumeCommand]);
-	Slim::Control::Request::addDispatch(['queueconsume', '?'],         [1, 0, 0, \&_consumeQuery]);
+	Slim::Control::Request::addDispatch(['queueconsume', '_newvalue'], [1, 1, 1, \&_consumeCommand]);
 
 	$class->SUPER::initPlugin(@_);
 }
@@ -160,8 +159,18 @@ sub _transportCallback {
 	my $client = $request->client() || return;
 	$client = $client->master();
 
-	# The user is driving, so cancel any pending end-of-queue consumption.
-	Slim::Utils::Timers::killTimers($client, \&_consumeLast);
+	my $st = $state{$client->id} ||= {};
+
+	# Play resumes playback: forget any earlier user stop. Every other
+	# transport command means the user is driving, so a following
+	# 'playlist stop' must keep the final track.
+	my $cmd = $request->getRequest(0);
+	if ($cmd eq 'play' || ($cmd eq 'playlistcontrol' && $request->getParam('cmd') eq 'play')) {
+		delete $st->{userStopped};
+	}
+	else {
+		$st->{userStopped} = 1;
+	}
 }
 
 # ------------------------------------------------------------------- logic --
@@ -171,6 +180,9 @@ sub _songChanged {
 	my $st = $state{$client->id} ||= {};
 
 	return if $st->{busy};
+
+	# A new song starts a fresh queue run - forget any earlier user stop.
+	delete $st->{userStopped};
 
 	my $jump      = delete $st->{jump};
 	my $prevIndex = $st->{index};
@@ -200,33 +212,29 @@ sub _songChanged {
 	_sync($client);
 }
 
-# Playback stopped. If we were sitting on the last entry of the queue, the
-# queue ran out - consume that final track. The removal is deferred by half a
-# second so an explicit stop/pause notification arriving right after this one
-# can still cancel it (see _transportCallback).
+# Playback stopped. When the queue ran out naturally (we are sitting on the
+# last entry), consume that final track so the queue ends up empty.
+#
+# The removal is immediate, no deferred timer: a natural end of queue only
+# ever produces ['playlist','stop'], while anything the user did (stop,
+# pause, power, playlistcontrol) has already been recorded in
+# $st->{userStopped} by _transportCallback.
 sub _maybeConsumeLast {
 	my $client = shift;
 	my $st = $state{$client->id} ||= {};
 
 	return if $st->{busy};
+
+	if (delete $st->{userStopped}) {
+		main::DEBUGLOG && $log->is_debug && $log->debug(
+			$client->id . ": stop came from the user - keeping the final track"
+		);
+		return;
+	}
+
 	return unless $prefs->get('consumeLastTrack');
 	return unless $prefs->client($client)->get('consume');
 	return unless defined $st->{index};
-
-	my $count = Slim::Player::Playlist::count($client) || 0;
-	return unless $count && $st->{index} == $count - 1;
-
-	Slim::Utils::Timers::killTimers($client, \&_consumeLast);
-	Slim::Utils::Timers::setTimer($client, Time::HiRes::time() + 0.5, \&_consumeLast);
-}
-
-sub _consumeLast {
-	my $client = shift;
-	my $st = $state{$client->id} || return;
-
-	return if $st->{busy};
-	return unless defined $st->{index};
-	return if Slim::Player::Source::playmode($client) =~ /play/;
 
 	my $count = Slim::Player::Playlist::count($client) || 0;
 	return unless $count && $st->{index} == $count - 1;
@@ -235,7 +243,9 @@ sub _consumeLast {
 	delete $st->{index};
 	delete $st->{url};
 
-	main::INFOLOG && $log->is_info && $log->info($client->id . ": consuming final index $index");
+	main::INFOLOG && $log->is_info && $log->info(
+		$client->id . ": queue ended on the final track - consuming index $index"
+	);
 
 	$st->{busy} = 1;
 	_removeTrack($client, $index, $url, 1);
@@ -312,10 +322,12 @@ sub _findUrl {
 
 # ---------------------------------------------------------------------- CLI --
 
+# Handles both the command (<playerid> queueconsume <0|1>) and the query
+# (<playerid> queueconsume ?).
 sub _consumeCommand {
 	my $request = shift;
 
-	if ($request->isNotCommand([['queueconsume']])) {
+	if ($request->isNotCommand([['queueconsume']]) && $request->isNotQuery([['queueconsume']])) {
 		$request->setStatusBadDispatch();
 		return;
 	}
@@ -327,33 +339,21 @@ sub _consumeCommand {
 	}
 	$client = $client->master();
 
-	my $cprefs   = $prefs->client($client);
-	my $newvalue = $request->getParam('_newvalue');
+	my $cprefs = $prefs->client($client);
+
+	if ($request->isQuery([['queueconsume']])) {
+		$request->addResult('_queueconsume', $cprefs->get('consume') ? 1 : 0);
+		$request->setStatusDone();
+		return;
+	}
 
 	# Without a value, toggle the current setting.
+	my $newvalue = $request->getParam('_newvalue');
 	$newvalue = $cprefs->get('consume') ? 0 : 1 unless defined $newvalue;
 
 	$cprefs->set('consume', $newvalue ? 1 : 0);
 	_sync($client);
 
-	$request->setStatusDone();
-}
-
-sub _consumeQuery {
-	my $request = shift;
-
-	if ($request->isNotQuery([['queueconsume']])) {
-		$request->setStatusBadDispatch();
-		return;
-	}
-
-	my $client = $request->client();
-	if (!$client) {
-		$request->setStatusBadDispatch();
-		return;
-	}
-
-	$request->addResult('_queueconsume', $prefs->client($client->master)->get('consume') ? 1 : 0);
 	$request->setStatusDone();
 }
 
